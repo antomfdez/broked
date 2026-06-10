@@ -1,0 +1,44 @@
+// broked - a vim-style code editor written in brokm.
+//
+//   brokm broked.bk [file]          run from source
+//   brokm build broked.bk -o broked AOT-compile to a native executable
+//
+// Requires BROKM_HOME (or ~/.brokm) so "std/*.bk" includes resolve.
+
+#include "dispatch.bk"
+#include "render.bk"
+
+U0 BrokedMain()
+{
+  U0[] size = TermSize();
+  Ed e = EdNew(size[0], size[1]);
+
+  U0[] argv = Args();
+  if (Len(argv) > 0) {
+    e.path = argv[0];
+    e.lines = BufLoad(e.path);
+    if (!FileExists(e.path)) EdSetStatus(e, "\"" + e.path + "\" [New File]");
+    else EdSetStatus(e, "\"" + e.path + "\" " + ToStr(Len(e.lines)) + "L");
+  } else {
+    EdSetStatus(e, "broked: :w <path> saves, :q quits, i inserts");
+  }
+
+  TermRawOn();
+  while (!e.quit) {
+    EdScroll(e);
+    EdDraw(e);
+    I64 k = TermReadKey();
+    if (k < 0) break;          // no tty / EOF: bail out safely
+    if (k == 12) {             // Ctrl-L: re-query size and redraw
+      U0[] ns = TermSize();
+      e.rows = ns[0];
+      e.cols = ns[1];
+    } else {
+      EdKey(e, k);
+    }
+  }
+  TermRawOff();
+  Print("%s", TermCsi("2J") + TermCsi("H"));
+}
+
+BrokedMain();

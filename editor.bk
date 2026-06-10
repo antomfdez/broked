@@ -1,0 +1,336 @@
+// editor.bk - editor state (Ed) plus the helpers every mode shares:
+// cursor clamping, scrolling, undo, word motions, search, saving.
+
+#include "buffer.bk"
+#include "term.bk"   // K_* key constants used by the mode handlers
+
+I64 M_NORMAL = 0;
+I64 M_INSERT = 1;
+I64 M_CMD    = 2;
+
+I64 TABSTOP = 8;
+
+class Ed {
+  U0[] lines;      // the buffer
+  U8   path;       // file path, "" when unnamed
+  Bool dirty;      // unsaved changes?
+  I64  cx;         // cursor: char index into lines[cy]
+  I64  cy;         // cursor: line index
+  I64  wantx;      // desired column for j/k (vim's curswant)
+  I64  rowoff;     // first visible line
+  I64  coloff;     // first visible render-column
+  I64  rows;       // terminal height
+  I64  cols;       // terminal width
+  I64  mode;       // M_NORMAL / M_INSERT / M_CMD
+  U8   cmd;        // command-line buffer (text after : or /)
+  I64  cmdkind;    // ':' or '/'
+  U8   status;     // message-line text
+  I64  count;      // pending numeric prefix
+  U8   pending;    // pending two-key op: "" "d" "y" "g" "r" "Z"
+  U0[] yank;       // yank register (array of strings)
+  Bool yankline;   // register is linewise?
+  U0[] undostack;  // entries: [lines-copy, cx, cy]
+  I64  undolen;    // live entries (the array itself never shrinks)
+  U8   search;     // last / pattern
+  Bool quit;       // main loop exit flag
+}
+
+Ed EdNew(I64 rows, I64 cols)
+{
+  Ed e;
+  e.lines = [""];
+  e.path = "";
+  e.dirty = FALSE;
+  e.cx = 0;
+  e.cy = 0;
+  e.wantx = 0;
+  e.rowoff = 0;
+  e.coloff = 0;
+  e.rows = rows;
+  e.cols = cols;
+  e.mode = M_NORMAL;
+  e.cmd = "";
+  e.cmdkind = ':';
+  e.status = "";
+  e.count = 0;
+  e.pending = "";
+  e.yank = [];
+  e.yankline = TRUE;
+  e.undostack = [];
+  e.undolen = 0;
+  e.search = "";
+  e.quit = FALSE;
+  return e;
+}
+
+U0 EdSetStatus(Ed e, U8 msg) { e.status = msg; }
+
+U8 EdCurLine(Ed e) { return e.lines[e.cy]; }
+
+// Highest legal cx for the current line in the current mode: insert mode
+// may sit one past the end, normal mode sits on the last char.
+I64 EdMaxX(Ed e)
+{
+  I64 n = Len(EdCurLine(e));
+  if (e.mode == M_INSERT) return n;
+  if (n == 0) return 0;
+  return n - 1;
+}
+
+U0 EdClampX(Ed e)
+{
+  if (e.cx > EdMaxX(e)) e.cx = EdMaxX(e);
+  if (e.cx < 0) e.cx = 0;
+}
+
+// --- undo -----------------------------------------------------------------
+
+U0 EdPushUndo(Ed e)
+{
+  U0[] entry = [ArrCopy(e.lines), e.cx, e.cy];
+  if (e.undolen < Len(e.undostack)) e.undostack[e.undolen] = entry;
+  else Append(e.undostack, entry);
+  e.undolen = e.undolen + 1;
+}
+
+U0 EdUndo(Ed e)
+{
+  if (e.undolen == 0) {
+    EdSetStatus(e, "Already at oldest change");
+    return;
+  }
+  e.undolen = e.undolen - 1;
+  U0[] entry = e.undostack[e.undolen];
+  e.lines = ArrCopy(entry[0]);
+  e.cx = entry[1];
+  e.cy = entry[2];
+  if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+  EdClampX(e);
+  e.dirty = TRUE;
+  EdSetStatus(e, "undo");
+}
+
+// --- mutation primitives shared by modes ------------------------------------
+
+U0 EdMarkDirty(Ed e) { e.dirty = TRUE; }
+
+Bool EdSave(Ed e)
+{
+  if (e.path == "") {
+    EdSetStatus(e, "No file name (use :w <path>)");
+    return FALSE;
+  }
+  if (!BufSave(e.path, e.lines)) {
+    EdSetStatus(e, "Cannot write " + e.path);
+    return FALSE;
+  }
+  e.dirty = FALSE;
+  EdSetStatus(e, "\"" + e.path + "\" " + ToStr(Len(e.lines)) + "L written");
+  return TRUE;
+}
+
+// --- rendering geometry -----------------------------------------------------
+
+I64 EdTextRows(Ed e) { return e.rows - 2; }
+
+// Gutter width: line-number digits plus one space.
+I64 EdGutter(Ed e) { return Len(ToStr(Len(e.lines))) + 1; }
+
+// cx (char index) -> rx (screen column), expanding tabs.
+I64 EdRxOf(U8 line, I64 cx)
+{
+  I64 rx = 0;
+  I64 i = 0;
+  for (i = 0; i < cx; ++i) {
+    if (CharAt(line, i) == 9) rx = rx + (TABSTOP - rx % TABSTOP);
+    else rx = rx + 1;
+  }
+  return rx;
+}
+
+U0 EdScroll(Ed e)
+{
+  I64 tr = EdTextRows(e);
+  if (e.cy < e.rowoff) e.rowoff = e.cy;
+  if (e.cy >= e.rowoff + tr) e.rowoff = e.cy - tr + 1;
+  I64 rx = EdRxOf(EdCurLine(e), e.cx);
+  I64 tw = e.cols - EdGutter(e);
+  if (rx < e.coloff) e.coloff = rx;
+  if (rx >= e.coloff + tw) e.coloff = rx - tw + 1;
+}
+
+// --- motions ----------------------------------------------------------------
+
+// 0 = whitespace, 1 = word char [A-Za-z0-9_], 2 = other punctuation.
+I64 ChClass(I64 c)
+{
+  if (c == ' ' || c == 9 || c < 0) return 0;
+  if (c >= 'a' && c <= 'z') return 1;
+  if (c >= 'A' && c <= 'Z') return 1;
+  if (c >= '0' && c <= '9') return 1;
+  if (c == '_') return 1;
+  return 2;
+}
+
+// First non-blank column of a line.
+I64 LineFirstNonBlank(U8 line)
+{
+  I64 i = 0;
+  while (i < Len(line) && StrIsSpace(CharAt(line, i))) i = i + 1;
+  if (i >= Len(line)) return 0;
+  return i;
+}
+
+// w - start of next word, crossing lines; stops on empty lines like vim.
+U0 EdWordFwd(Ed e)
+{
+  U8 line = EdCurLine(e);
+  I64 n = Len(line);
+  if (e.cx < n) {
+    I64 cls = ChClass(CharAt(line, e.cx));
+    if (cls != 0)
+      while (e.cx < n && ChClass(CharAt(line, e.cx)) == cls) e.cx = e.cx + 1;
+  }
+  Bool moving = TRUE;
+  while (moving) {
+    line = EdCurLine(e);
+    n = Len(line);
+    if (e.cx >= n) {
+      if (e.cy < Len(e.lines) - 1) {
+        e.cy = e.cy + 1;
+        e.cx = 0;
+        if (Len(EdCurLine(e)) == 0) moving = FALSE;
+      } else {
+        moving = FALSE;
+      }
+    } else if (ChClass(CharAt(line, e.cx)) == 0) {
+      e.cx = e.cx + 1;
+    } else {
+      moving = FALSE;
+    }
+  }
+  EdClampX(e);
+}
+
+// b - start of previous word, crossing lines.
+U0 EdWordBack(Ed e)
+{
+  // Step left once, wrapping to the end of the previous line.
+  if (e.cx == 0) {
+    if (e.cy == 0) return;
+    e.cy = e.cy - 1;
+    e.cx = Len(EdCurLine(e));
+  }
+  e.cx = e.cx - 1;
+  // Skip whitespace backwards, wrapping.
+  Bool moving = TRUE;
+  while (moving) {
+    if (e.cx < 0) {
+      if (e.cy == 0) { e.cx = 0; return; }
+      e.cy = e.cy - 1;
+      e.cx = Len(EdCurLine(e)) - 1;
+      if (e.cx < 0) e.cx = 0;
+      if (Len(EdCurLine(e)) == 0) moving = FALSE;
+    } else if (ChClass(CharAt(EdCurLine(e), e.cx)) == 0) {
+      e.cx = e.cx - 1;
+    } else {
+      moving = FALSE;
+    }
+  }
+  if (e.cx < 0) e.cx = 0;
+  // Walk to the start of this run of same-class chars.
+  U8 line = EdCurLine(e);
+  if (Len(line) == 0) return;
+  I64 cls = ChClass(CharAt(line, e.cx));
+  while (e.cx > 0 && ChClass(CharAt(line, e.cx - 1)) == cls) e.cx = e.cx - 1;
+}
+
+// e - end of word, crossing lines.
+U0 EdWordEnd(Ed e)
+{
+  // Step right once, wrapping.
+  e.cx = e.cx + 1;
+  Bool moving = TRUE;
+  while (moving) {
+    U8 line = EdCurLine(e);
+    I64 n = Len(line);
+    if (e.cx >= n) {
+      if (e.cy < Len(e.lines) - 1) { e.cy = e.cy + 1; e.cx = 0; }
+      else { moving = FALSE; }
+    } else if (ChClass(CharAt(line, e.cx)) == 0) {
+      e.cx = e.cx + 1;
+    } else {
+      moving = FALSE;
+    }
+  }
+  // Walk to the end of this run.
+  U8 cur = EdCurLine(e);
+  if (Len(cur) == 0) { EdClampX(e); return; }
+  I64 cls = ChClass(CharAt(cur, e.cx));
+  while (e.cx < Len(cur) - 1 && ChClass(CharAt(cur, e.cx + 1)) == cls)
+    e.cx = e.cx + 1;
+  EdClampX(e);
+}
+
+// Vertical move keeping the desired column (vim's curswant).
+U0 EdMoveY(Ed e, I64 dy)
+{
+  e.cy = e.cy + dy;
+  if (e.cy < 0) e.cy = 0;
+  if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+  e.cx = e.wantx;
+  EdClampX(e);
+}
+
+U0 EdMoveX(Ed e, I64 dx)
+{
+  e.cx = e.cx + dx;
+  EdClampX(e);
+  e.wantx = e.cx;
+}
+
+// --- search -----------------------------------------------------------------
+
+// Find `term` forward (fwd) or backward from just past/before the cursor,
+// wrapping around the buffer once. Moves the cursor on a hit.
+Bool EdFind(Ed e, U8 term, Bool fwd)
+{
+  if (term == "" || term == NULL) return FALSE;
+  I64 total = Len(e.lines);
+  I64 i = 0;
+  if (fwd) {
+    I64 startx = e.cx + 1;
+    for (i = 0; i <= total; ++i) {
+      I64 y = (e.cy + i) % total;
+      I64 from = 0;
+      if (i == 0) from = startx;
+      I64 hit = StrIndexOfFrom(e.lines[y], term, from);
+      if (hit >= 0 && !(i == total && hit >= startx)) {
+        e.cy = y;
+        e.cx = hit;
+        e.wantx = e.cx;
+        return TRUE;
+      }
+    }
+    return FALSE;
+  }
+  for (i = 0; i <= total; ++i) {
+    I64 y = ((e.cy - i) % total + total) % total;
+    I64 limit = Len(e.lines[y]);
+    if (i == 0) limit = e.cx;
+    // Last occurrence strictly before `limit`.
+    I64 best = -1;
+    I64 at = StrIndexOfFrom(e.lines[y], term, 0);
+    while (at >= 0 && at < limit) {
+      best = at;
+      at = StrIndexOfFrom(e.lines[y], term, at + 1);
+    }
+    if (best >= 0) {
+      e.cy = y;
+      e.cx = best;
+      e.wantx = e.cx;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}

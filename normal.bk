@@ -1,0 +1,232 @@
+// normal.bk - NORMAL mode: motions, operators, counts, registers.
+
+#include "editor.bk"
+
+// Delete `n` whole lines at the cursor into the yank register.
+U0 EdDeleteLines(Ed e, I64 n)
+{
+  EdPushUndo(e);
+  I64 avail = Len(e.lines) - e.cy;
+  if (n > avail) n = avail;
+  e.yank = ArrSlice(e.lines, e.cy, n);
+  e.yankline = TRUE;
+  e.lines = LinesRemoveAt(e.lines, e.cy, n);
+  if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+  e.cx = LineFirstNonBlank(EdCurLine(e));
+  EdMarkDirty(e);
+}
+
+U0 EdYankLines(Ed e, I64 n)
+{
+  I64 avail = Len(e.lines) - e.cy;
+  if (n > avail) n = avail;
+  e.yank = ArrSlice(e.lines, e.cy, n);
+  e.yankline = TRUE;
+  EdSetStatus(e, ToStr(n) + " line(s) yanked");
+}
+
+// x / X - delete chars on the current line into the register (charwise).
+U0 EdDeleteChars(Ed e, I64 at, I64 n)
+{
+  U8 line = EdCurLine(e);
+  if (Len(line) == 0) return;
+  if (at < 0) { n = n + at; at = 0; }
+  if (at + n > Len(line)) n = Len(line) - at;
+  if (n <= 0) return;
+  EdPushUndo(e);
+  e.yank = [Substr(line, at, n)];
+  e.yankline = FALSE;
+  e.lines[e.cy] = LineRemoveRange(line, at, n);
+  e.cx = at;
+  EdClampX(e);
+  EdMarkDirty(e);
+}
+
+// p / P - paste the register after (below) or at (above) the cursor.
+U0 EdPaste(Ed e, Bool after)
+{
+  if (Len(e.yank) == 0) return;
+  EdPushUndo(e);
+  if (e.yankline) {
+    I64 at = e.cy;
+    if (after) at = e.cy + 1;
+    I64 i = 0;
+    for (i = 0; i < Len(e.yank); ++i)
+      e.lines = LinesInsertAt(e.lines, at + i, e.yank[i]);
+    e.cy = at;
+    e.cx = LineFirstNonBlank(EdCurLine(e));
+  } else {
+    U8 line = EdCurLine(e);
+    I64 at = e.cx;
+    if (after && Len(line) > 0) at = e.cx + 1;
+    e.lines[e.cy] = LineInsertStr(line, at, e.yank[0]);
+    e.cx = at + Len(e.yank[0]) - 1;
+  }
+  EdMarkDirty(e);
+}
+
+// J - join the next line onto this one with a single space.
+U0 EdJoin(Ed e)
+{
+  if (e.cy >= Len(e.lines) - 1) return;
+  EdPushUndo(e);
+  U8 cur = StrTrimRight(EdCurLine(e));
+  U8 next = StrTrimLeft(e.lines[e.cy + 1]);
+  U8 joined = cur;
+  if (Len(cur) > 0 && Len(next) > 0) joined = cur + " " + next;
+  else joined = cur + next;
+  e.lines[e.cy] = joined;
+  e.lines = LinesRemoveAt(e.lines, e.cy + 1, 1);
+  e.cx = Len(cur);
+  EdClampX(e);
+  EdMarkDirty(e);
+}
+
+// o / O - open a line below/above and enter insert mode.
+U0 EdOpenLine(Ed e, Bool below)
+{
+  EdPushUndo(e);
+  I64 at = e.cy;
+  if (below) at = e.cy + 1;
+  e.lines = LinesInsertAt(e.lines, at, "");
+  e.cy = at;
+  e.cx = 0;
+  e.mode = M_INSERT;
+  EdMarkDirty(e);
+}
+
+U0 EdEnterInsert(Ed e, I64 atx)
+{
+  EdPushUndo(e);
+  e.mode = M_INSERT;
+  e.cx = atx;
+  EdClampX(e);
+}
+
+// Resolve a pending two-key sequence (dd, yy, gg, r<c>, ZZ). Returns TRUE
+// when the key was consumed by the pending state machine.
+Bool EdPendingKey(Ed e, I64 k, I64 rep)
+{
+  U8 p = e.pending;
+  if (p == "") return FALSE;
+  e.pending = "";
+  if (p == "r") {
+    if (k >= 32 && k <= 126 && Len(EdCurLine(e)) > 0) {
+      EdPushUndo(e);
+      U8 line = EdCurLine(e);
+      e.lines[e.cy] = Substr(line, 0, e.cx) + Chr(k)
+                    + Substr(line, e.cx + 1, Len(line) - e.cx - 1);
+      EdMarkDirty(e);
+    }
+    return TRUE;
+  }
+  if (p == "d") {
+    if (k == 'd') EdDeleteLines(e, rep);
+    return TRUE;
+  }
+  if (p == "y") {
+    if (k == 'y') EdYankLines(e, rep);
+    return TRUE;
+  }
+  if (p == "g") {
+    if (k == 'g') {
+      e.cy = rep - 1;
+      if (e.count == 0) e.cy = 0;
+      if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+      e.cx = LineFirstNonBlank(EdCurLine(e));
+      e.wantx = e.cx;
+    }
+    return TRUE;
+  }
+  if (p == "Z") {
+    if (k == 'Z') { if (EdSave(e)) e.quit = TRUE; }
+    return TRUE;
+  }
+  return TRUE;
+}
+
+U0 EdNormalKey(Ed e, I64 k)
+{
+  I64 rep = e.count;
+  if (rep < 1) rep = 1;
+
+  if (EdPendingKey(e, k, rep)) { e.count = 0; return; }
+
+  // Numeric prefix ('0' alone is the line-start motion).
+  if ((k >= '1' && k <= '9') || (k == '0' && e.count > 0)) {
+    e.count = e.count * 10 + (k - '0');
+    return;
+  }
+
+  I64 i = 0;
+
+  // -- motions --
+  if (k == 'h' || k == K_LEFT)  { EdMoveX(e, 0 - rep); }
+  else if (k == 'l' || k == K_RIGHT) { EdMoveX(e, rep); }
+  else if (k == 'j' || k == K_DOWN)  { EdMoveY(e, rep); }
+  else if (k == 'k' || k == K_UP)    { EdMoveY(e, 0 - rep); }
+  else if (k == '0' || k == K_HOME)  { e.cx = 0; e.wantx = 0; }
+  else if (k == '$' || k == K_END)   { e.cx = EdMaxX(e); e.wantx = 999999; }
+  else if (k == '^') { e.cx = LineFirstNonBlank(EdCurLine(e)); e.wantx = e.cx; }
+  else if (k == 'w') { for (i = 0; i < rep; ++i) EdWordFwd(e); e.wantx = e.cx; }
+  else if (k == 'b') { for (i = 0; i < rep; ++i) EdWordBack(e); e.wantx = e.cx; }
+  else if (k == 'e') { for (i = 0; i < rep; ++i) EdWordEnd(e); e.wantx = e.cx; }
+  else if (k == 'G') {
+    e.cy = Len(e.lines) - 1;
+    if (e.count > 0) e.cy = rep - 1;
+    if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+    if (e.cy < 0) e.cy = 0;
+    e.cx = LineFirstNonBlank(EdCurLine(e));
+    e.wantx = e.cx;
+  }
+  else if (k == 4)  { EdMoveY(e, EdTextRows(e) / 2); }        // Ctrl-D
+  else if (k == 21) { EdMoveY(e, 0 - EdTextRows(e) / 2); }    // Ctrl-U
+  else if (k == K_PGDN) { EdMoveY(e, EdTextRows(e)); }
+  else if (k == K_PGUP) { EdMoveY(e, 0 - EdTextRows(e)); }
+
+  // -- pending starters --
+  else if (k == 'd') { e.pending = "d"; return; }   // keep count for dd
+  else if (k == 'y') { e.pending = "y"; return; }
+  else if (k == 'g') { e.pending = "g"; return; }
+  else if (k == 'r') { e.pending = "r"; return; }
+  else if (k == 'Z') { e.pending = "Z"; return; }
+
+  // -- edits --
+  else if (k == 'x' || k == K_DEL) { EdDeleteChars(e, e.cx, rep); }
+  else if (k == 'X') { if (e.cx > 0) EdDeleteChars(e, e.cx - rep, rep); }
+  else if (k == 'D') {
+    U8 line = EdCurLine(e);
+    if (e.cx < Len(line)) EdDeleteChars(e, e.cx, Len(line) - e.cx);
+  }
+  else if (k == 'J') { for (i = 0; i < rep; ++i) EdJoin(e); }
+  else if (k == 'p') { EdPaste(e, TRUE); }
+  else if (k == 'P') { EdPaste(e, FALSE); }
+  else if (k == 'u') { EdUndo(e); }
+
+  // -- insert-mode entries --
+  else if (k == 'i') { EdEnterInsert(e, e.cx); }
+  else if (k == 'I') { EdEnterInsert(e, LineFirstNonBlank(EdCurLine(e))); }
+  else if (k == 'a') {
+    I64 ax = e.cx;
+    if (Len(EdCurLine(e)) > 0) ax = e.cx + 1;
+    EdEnterInsert(e, ax);
+  }
+  else if (k == 'A') { EdEnterInsert(e, Len(EdCurLine(e))); }
+  else if (k == 'o') { EdOpenLine(e, TRUE); }
+  else if (k == 'O') { EdOpenLine(e, FALSE); }
+
+  // -- command line & search --
+  else if (k == ':') { e.mode = M_CMD; e.cmdkind = ':'; e.cmd = ""; }
+  else if (k == '/') { e.mode = M_CMD; e.cmdkind = '/'; e.cmd = ""; }
+  else if (k == 'n') {
+    if (!EdFind(e, e.search, TRUE)) EdSetStatus(e, "Pattern not found: " + e.search);
+  }
+  else if (k == 'N') {
+    if (!EdFind(e, e.search, FALSE)) EdSetStatus(e, "Pattern not found: " + e.search);
+  }
+
+  else if (k == 3) { EdSetStatus(e, "Type :q<Enter> to quit"); }  // Ctrl-C
+  else if (k == 27) { EdSetStatus(e, ""); }
+
+  e.count = 0;
+}

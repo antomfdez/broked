@@ -1,0 +1,66 @@
+// buffer.bk - the text buffer: a U0[] of immutable line strings.
+//
+// brokm arrays grow with Append but never shrink, so structural edits
+// (insert/remove a line) build and return a NEW array; callers reassign.
+// Single-line edits return a new string for the same reason.
+
+#include "std/str.bk"
+#include "std/arr.bk"
+
+// A new array with `line` inserted so it ends up at index i.
+U0[] LinesInsertAt(U0[] xs, I64 i, U8 line)
+{
+  U0[] out = [];
+  I64 j = 0;
+  for (j = 0; j < Len(xs); ++j) {
+    if (j == i) Append(out, line);
+    Append(out, xs[j]);
+  }
+  if (i >= Len(xs)) Append(out, line);
+  return out;
+}
+
+// A new array with n lines removed starting at index i (clamped).
+U0[] LinesRemoveAt(U0[] xs, I64 i, I64 n)
+{
+  U0[] out = [];
+  I64 j = 0;
+  for (j = 0; j < Len(xs); ++j) {
+    if (j < i || j >= i + n) Append(out, xs[j]);
+  }
+  if (Len(out) == 0) Append(out, "");
+  return out;
+}
+
+// `line` with s spliced in at index `at`.
+U8 LineInsertStr(U8 line, I64 at, U8 s)
+{
+  return Substr(line, 0, at) + s + Substr(line, at, Len(line) - at);
+}
+
+// `line` with n chars removed at index `at`.
+U8 LineRemoveRange(U8 line, I64 at, I64 n)
+{
+  return Substr(line, 0, at) + Substr(line, at + n, Len(line) - (at + n));
+}
+
+// Load a file as an array of lines. A missing file yields a single empty
+// line (a "new file"). Tolerates CRLF; a final trailing newline does not
+// produce a phantom empty last line.
+U0[] BufLoad(U8 path)
+{
+  U8 content = ReadFile(path);
+  if (content == NULL) return [""];
+  if (Len(content) == 0) return [""];
+  content = StrReplace(content, "\r\n", "\n");
+  U0[] lines = StrSplit(content, "\n");
+  if (Len(lines) > 1 && lines[Len(lines) - 1] == "")
+    return ArrSlice(lines, 0, Len(lines) - 1);
+  return lines;
+}
+
+// Write the buffer back: lines joined with "\n" plus a final newline.
+Bool BufSave(U8 path, U0[] lines)
+{
+  return WriteFile(path, StrJoin(lines, "\n") + "\n");
+}

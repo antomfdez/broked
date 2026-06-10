@@ -1,0 +1,21 @@
+// dispatch.bk - route one key to the active mode's handler.
+// Included by both the editor entry point and the headless tests.
+
+#include "editor.bk"
+#include "normal.bk"
+#include "insert.bk"
+#include "exline.bk"
+
+U0 EdKey(Ed e, I64 k)
+{
+  if (e.mode == M_INSERT) EdInsertKey(e, k);
+  else if (e.mode == M_CMD) EdCmdKey(e, k);
+  else EdNormalKey(e, k);
+}
+
+// Convenience for tests: feed every char of a string as keys.
+U0 EdFeed(Ed e, U8 keys)
+{
+  I64 i = 0;
+  for (i = 0; i < Len(keys); ++i) EdKey(e, CharAt(keys, i));
+}

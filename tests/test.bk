@@ -1,0 +1,320 @@
+// tests/test.bk - headless test suite for broked.
+//
+// Drives the editor through EdKey/EdFeed with a fixed 24x80 size and no
+// terminal. Run:  BROKM_HOME=<brokm repo> brokm tests/test.bk
+
+#include "../dispatch.bk"
+#include "../render.bk"
+
+I64 passed = 0;
+I64 failed = 0;
+
+U0 Check(Bool cond, U8 name)
+{
+  if (cond) { passed = passed + 1; return; }
+  failed = failed + 1;
+  PrintErr("FAIL: %s\n", name);
+}
+
+U0 CheckEq(U0 got, U0 want, U8 name)
+{
+  if (got == want) { passed = passed + 1; return; }
+  failed = failed + 1;
+  PrintErr("FAIL: %s (got %s, want %s)\n", name, ToStr(got), ToStr(want));
+}
+
+// Fresh editor over a known three-line buffer.
+Ed T()
+{
+  Ed e = EdNew(24, 80);
+  e.lines = ["hello world", "  second line", "third"];
+  return e;
+}
+
+// --- buffer primitives ------------------------------------------------------
+
+U0 TestBuffer()
+{
+  CheckEq(LineInsertStr("abc", 1, "XY"), "aXYbc", "LineInsertStr middle");
+  CheckEq(LineInsertStr("abc", 3, "!"), "abc!", "LineInsertStr end");
+  CheckEq(LineRemoveRange("abcde", 1, 2), "ade", "LineRemoveRange");
+  U0[] xs = LinesInsertAt(["a", "b"], 1, "X");
+  CheckEq(StrJoin(xs, ","), "a,X,b", "LinesInsertAt middle");
+  xs = LinesInsertAt(["a"], 1, "X");
+  CheckEq(StrJoin(xs, ","), "a,X", "LinesInsertAt append");
+  xs = LinesRemoveAt(["a", "b", "c"], 1, 1);
+  CheckEq(StrJoin(xs, ","), "a,c", "LinesRemoveAt one");
+  xs = LinesRemoveAt(["a"], 0, 1);
+  CheckEq(Len(xs), 1, "LinesRemoveAt never empties");
+  CheckEq(xs[0], "", "LinesRemoveAt leaves empty line");
+
+  WriteFile("/tmp/broked_t_load.txt", "a\r\nb\nc\n");
+  U0[] got = BufLoad("/tmp/broked_t_load.txt");
+  CheckEq(StrJoin(got, ","), "a,b,c", "BufLoad CRLF + trailing NL");
+  WriteFile("/tmp/broked_t_load.txt", "");
+  got = BufLoad("/tmp/broked_t_load.txt");
+  CheckEq(Len(got), 1, "BufLoad empty file");
+  got = BufLoad("/tmp/broked_t_missing_xyz.txt");
+  CheckEq(Len(got), 1, "BufLoad missing file");
+}
+
+// --- motions ------------------------------------------------------------
+
+U0 TestMotion()
+{
+  Ed e = T();
+  EdFeed(e, "ll");
+  CheckEq(e.cx, 2, "l moves right");
+  EdFeed(e, "j");
+  CheckEq(e.cy, 1, "j moves down");
+  EdFeed(e, "$");
+  CheckEq(e.cx, 12, "$ end of line");
+  EdFeed(e, "j");
+  CheckEq(e.cx, 4, "j keeps wantx at EOL");
+  EdFeed(e, "k");
+  CheckEq(e.cx, 12, "k restores long column");
+  EdFeed(e, "0");
+  CheckEq(e.cx, 0, "0 line start");
+  EdFeed(e, "^");
+  CheckEq(e.cx, 2, "^ first non-blank");
+  EdFeed(e, "gg");
+  Check(e.cy == 0 && e.cx == 0, "gg top");
+  EdFeed(e, "G");
+  CheckEq(e.cy, 2, "G bottom");
+  EdFeed(e, "2G");
+  CheckEq(e.cy, 1, "2G goes to line 2");
+  EdFeed(e, "9G");
+  CheckEq(e.cy, 2, "9G clamps to last line");
+  EdFeed(e, "gg3l");
+  CheckEq(e.cx, 3, "count 3l");
+  EdFeed(e, "h");
+  CheckEq(e.cx, 2, "h moves left");
+
+  e = T();
+  EdFeed(e, "w");
+  CheckEq(e.cx, 6, "w next word");
+  EdFeed(e, "e");
+  CheckEq(e.cx, 10, "e end of word");
+  EdFeed(e, "b");
+  CheckEq(e.cx, 6, "b back to word start");
+  EdFeed(e, "w");
+  Check(e.cy == 1 && e.cx == 2, "w wraps to next line nonblank");
+  EdFeed(e, "b");
+  Check(e.cy == 0 && e.cx == 6, "b wraps to previous line");
+}
+
+// --- insert mode --------------------------------------------------------
+
+U0 TestInsert()
+{
+  Ed e = T();
+  EdFeed(e, "iX");
+  CheckEq(e.mode, M_INSERT, "i enters insert");
+  CheckEq(e.lines[0], "Xhello world", "typed char inserted");
+  EdKey(e, 27);
+  CheckEq(e.mode, M_NORMAL, "ESC back to normal");
+  CheckEq(e.cx, 0, "ESC steps cursor back");
+  Check(e.dirty, "insert marks dirty");
+
+  e = T();
+  EdFeed(e, "A!");
+  CheckEq(e.lines[0], "hello world!", "A appends at EOL");
+  EdKey(e, 27);
+
+  e = T();
+  EdFeed(e, "o");
+  Check(e.mode == M_INSERT && e.cy == 1 && Len(e.lines) == 4, "o opens below");
+  EdKey(e, 27);
+  EdFeed(e, "O");
+  Check(e.cy == 1 && Len(e.lines) == 5, "O opens above");
+  EdKey(e, 27);
+
+  e = T();
+  EdFeed(e, "llli");
+  EdKey(e, 13);
+  Check(e.lines[0] == "hel" && e.lines[1] == "lo world", "Enter splits line");
+  Check(e.cy == 1 && e.cx == 0, "cursor after split");
+  EdKey(e, 127);
+  Check(e.lines[0] == "hello world" && e.cy == 0 && e.cx == 3,
+        "Backspace joins lines back");
+  EdKey(e, 27);
+
+  Ed e2 = EdNew(24, 80);
+  EdFeed(e2, "az");
+  CheckEq(e2.lines[0], "z", "a on empty line");
+  EdKey(e2, 9);
+  CheckEq(e2.lines[0], "z\t", "Tab inserts tab char");
+}
+
+// --- edits, registers, undo ----------------------------------------------
+
+U0 TestEdits()
+{
+  Ed e = T();
+  EdFeed(e, "x");
+  CheckEq(e.lines[0], "ello world", "x deletes char");
+  EdFeed(e, "p");
+  CheckEq(e.lines[0], "ehllo world", "p pastes charwise after cursor");
+  CheckEq(e.cx, 1, "p cursor on pasted char");
+  EdFeed(e, "X");
+  CheckEq(e.lines[0], "hllo world", "X deletes before cursor");
+  EdFeed(e, "0X");
+  CheckEq(e.lines[0], "hllo world", "X at col 0 is a no-op");
+
+  e = T();
+  EdFeed(e, "llD");
+  CheckEq(e.lines[0], "he", "D deletes to EOL");
+  CheckEq(e.cx, 1, "D clamps cursor");
+
+  e = T();
+  EdFeed(e, "dd");
+  Check(Len(e.lines) == 2 && e.lines[0] == "  second line", "dd deletes line");
+  EdFeed(e, "p");
+  Check(Len(e.lines) == 3 && e.lines[1] == "hello world" && e.cy == 1,
+        "p pastes line below");
+  EdFeed(e, "P");
+  Check(Len(e.lines) == 4 && e.lines[1] == "hello world", "P pastes line above");
+
+  e = T();
+  EdFeed(e, "2dd");
+  Check(Len(e.lines) == 1 && e.lines[0] == "third", "2dd deletes two lines");
+  EdFeed(e, "dd");
+  Check(Len(e.lines) == 1 && e.lines[0] == "", "dd on last line leaves empty");
+
+  e = T();
+  EdFeed(e, "yyp");
+  Check(Len(e.lines) == 4 && e.lines[1] == "hello world", "yy then p duplicates");
+  Check(e.lines[0] == "hello world", "yy leaves source intact");
+
+  e = T();
+  EdFeed(e, "J");
+  CheckEq(e.lines[0], "hello world second line", "J joins with one space");
+  CheckEq(e.cx, 11, "J cursor at join point");
+  CheckEq(Len(e.lines), 2, "J removed a line");
+
+  e = T();
+  EdFeed(e, "rH");
+  CheckEq(e.lines[0], "Hello world", "r replaces char");
+
+  e = T();
+  EdFeed(e, "xu");
+  CheckEq(e.lines[0], "hello world", "u undoes x");
+  EdFeed(e, "ddu");
+  Check(Len(e.lines) == 3 && e.lines[0] == "hello world", "u undoes dd");
+  EdFeed(e, "iab");
+  EdKey(e, 27);
+  EdFeed(e, "u");
+  CheckEq(e.lines[0], "hello world", "u undoes whole insert session");
+}
+
+// --- command line & search -------------------------------------------------
+
+U0 TestExline()
+{
+  Ed e = T();
+  EdFeed(e, ":q\r");
+  Check(e.quit, ":q quits clean buffer");
+
+  e = T();
+  EdFeed(e, "x:q\r");
+  Check(!e.quit, ":q refuses dirty buffer");
+  Check(StrContains(e.status, "No write"), ":q dirty message");
+  EdFeed(e, ":q!\r");
+  Check(e.quit, ":q! forces quit");
+
+  e = T();
+  EdFeed(e, ":3\r");
+  CheckEq(e.cy, 2, ":N goes to line N");
+
+  e = T();
+  EdFeed(e, ":nonsense\r");
+  Check(StrContains(e.status, "Not an editor command"), "unknown command message");
+  CheckEq(e.mode, M_NORMAL, "command line exits to normal");
+
+  e = T();
+  EdFeed(e, ":w /tmp/broked_t_save.txt\r");
+  CheckEq(ReadFile("/tmp/broked_t_save.txt"), "hello world\n  second line\nthird\n",
+          ":w <path> writes buffer");
+  Check(!e.dirty, "save clears dirty");
+  CheckEq(e.path, "/tmp/broked_t_save.txt", ":w <path> adopts path");
+
+  e = T();
+  e.path = "/tmp/broked_t_zz.txt";
+  EdFeed(e, "xZZ");
+  Check(e.quit, "ZZ quits");
+  CheckEq(ReadFile("/tmp/broked_t_zz.txt"), "ello world\n  second line\nthird\n",
+          "ZZ wrote the file");
+
+  e = T();
+  EdFeed(e, "/second\r");
+  Check(e.cy == 1 && e.cx == 2, "/ search moves cursor");
+  EdFeed(e, "n");
+  Check(e.cy == 1 && e.cx == 2, "n wraps to same single match");
+  EdFeed(e, "gg/zzz\r");
+  Check(StrContains(e.status, "not found"), "search miss reports");
+
+  e = T();
+  e.lines = ["one line", "two line", "three line"];
+  EdFeed(e, "/line\r");
+  Check(e.cy == 0 && e.cx == 4, "search finds on same line after cursor");
+  EdFeed(e, "n");
+  CheckEq(e.cy, 1, "n finds next match");
+  EdFeed(e, "n");
+  CheckEq(e.cy, 2, "n again");
+  EdFeed(e, "N");
+  CheckEq(e.cy, 1, "N searches backward");
+
+  e = T();
+  EdFeed(e, "/x");
+  EdKey(e, 27);
+  Check(e.mode == M_NORMAL && e.cy == 0, "ESC cancels command line");
+}
+
+// --- rendering helpers ----------------------------------------------------
+
+U0 TestRender()
+{
+  CheckEq(EdRxOf("\tx", 1), 8, "tab advances rx to stop");
+  CheckEq(EdRxOf("ab\tc", 3), 8, "tab after chars");
+  CheckEq(RenderExpand("\tx"), "        x", "RenderExpand tab");
+  Ed e = T();
+  Check(StrContains(RenderStatusBar(e), "NORMAL"), "status bar shows mode");
+  Check(StrContains(RenderStatusBar(e), "[No Name]"), "status bar unnamed file");
+  e.path = "a.bk";
+  EdFeed(e, "x");
+  Check(StrContains(RenderStatusBar(e), "a.bk [+]"), "status bar dirty flag");
+  EdFeed(e, ":wq");
+  CheckEq(RenderMessageLine(e), ":wq", "message line echoes command");
+}
+
+// --- syntax highlighting -----------------------------------------------
+
+U0 TestHighlight()
+{
+  CheckEq(HlLine("hello"), "hello", "plain text passes through");
+  U8 got = HlLine("I64 x = 42; // c");
+  Check(StrContains(got, HL_TYPE + "I64" + HL_RESET), "type colored");
+  Check(StrContains(got, HL_NUMBER + "42" + HL_RESET), "number colored");
+  Check(StrContains(got, HL_COMMENT + "// c" + HL_RESET), "comment colored");
+  got = HlLine("return \"a b\";");
+  Check(StrContains(got, HL_KEYWORD + "return" + HL_RESET), "keyword colored");
+  Check(StrContains(got, HL_STRING + "\"a b\"" + HL_RESET), "string colored");
+  got = HlLine("x = \"q \\\" q\" + 'z';");
+  Check(StrContains(got, HL_STRING + "\"q \\\" q\"" + HL_RESET),
+        "escaped quote stays in string");
+  Check(StrContains(got, HL_STRING + "'z'" + HL_RESET), "char literal colored");
+  CheckEq(HlLine("ab42cd"), "ab42cd", "digits inside identifier stay plain");
+  Check(StrContains(HlLine("\"open"), HL_STRING + "\"open" + HL_RESET),
+        "unterminated string colored to EOL");
+}
+
+TestBuffer();
+TestMotion();
+TestInsert();
+TestEdits();
+TestExline();
+TestRender();
+TestHighlight();
+
+"%d passed, %d failed\n", passed, failed;
+if (failed > 0) Exit(1);

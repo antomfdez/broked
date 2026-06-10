@@ -1,0 +1,72 @@
+// exline.bk - the command line: ":" ex commands and "/" search.
+
+#include "editor.bk"
+
+Bool StrIsAllDigits(U8 s)
+{
+  if (Len(s) == 0) return FALSE;
+  I64 i = 0;
+  for (i = 0; i < Len(s); ++i) {
+    I64 c = CharAt(s, i);
+    if (c < '0' || c > '9') return FALSE;
+  }
+  return TRUE;
+}
+
+U0 EdExecEx(Ed e, U8 c)
+{
+  if (c == "q") {
+    if (e.dirty) EdSetStatus(e, "No write since last change (add ! to override)");
+    else e.quit = TRUE;
+  }
+  else if (c == "q!") { e.quit = TRUE; }
+  else if (c == "w")  { EdSave(e); }
+  else if (c == "wq" || c == "x") { if (EdSave(e)) e.quit = TRUE; }
+  else if (StrStartsWith(c, "w ")) {
+    e.path = StrTrim(Substr(c, 2, Len(c) - 2));
+    EdSave(e);
+  }
+  else if (c == "$") {
+    e.cy = Len(e.lines) - 1;
+    e.cx = LineFirstNonBlank(EdCurLine(e));
+  }
+  else if (StrIsAllDigits(c)) {
+    e.cy = ToInt(c) - 1;
+    if (e.cy < 0) e.cy = 0;
+    if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+    e.cx = LineFirstNonBlank(EdCurLine(e));
+  }
+  else if (c != "") {
+    EdSetStatus(e, "Not an editor command: " + c);
+  }
+}
+
+U0 EdExecCmd(Ed e)
+{
+  U8 c = StrTrim(e.cmd);
+  e.mode = M_NORMAL;
+  e.cmd = "";
+  if (e.cmdkind == '/') {
+    if (c != "") e.search = c;
+    if (!EdFind(e, e.search, TRUE))
+      EdSetStatus(e, "Pattern not found: " + e.search);
+    return;
+  }
+  EdExecEx(e, c);
+}
+
+U0 EdCmdKey(Ed e, I64 k)
+{
+  if (k == 27 || k == 3) {                       // ESC / Ctrl-C cancels
+    e.mode = M_NORMAL;
+    e.cmd = "";
+    return;
+  }
+  if (k == 13 || k == 10) { EdExecCmd(e); return; }
+  if (k == 127 || k == 8) {                      // Backspace
+    if (Len(e.cmd) == 0) { e.mode = M_NORMAL; return; }
+    e.cmd = Substr(e.cmd, 0, Len(e.cmd) - 1);
+    return;
+  }
+  if (k >= 32 && k <= 126) e.cmd = e.cmd + Chr(k);
+}

@@ -1,0 +1,65 @@
+// term.bk - terminal layer for broked.
+//
+// brokm has no native raw-tty API, so raw mode and byte-at-a-time key
+// reads go through stty(1) and dd(1) against /dev/tty. ShellStr flushes
+// stdout before launching its child, which is what pushes each rendered
+// frame to the screen right before we block on the next key.
+
+#include "std/str.bk"
+
+I64 K_UP    = 1001;
+I64 K_DOWN  = 1002;
+I64 K_LEFT  = 1003;
+I64 K_RIGHT = 1004;
+I64 K_DEL   = 1005;
+I64 K_HOME  = 1006;
+I64 K_END   = 1007;
+I64 K_PGUP  = 1008;
+I64 K_PGDN  = 1009;
+
+U8 TermCsi(U8 seq) { return Chr(27) + "[" + seq; }
+
+U0 TermRawOn()  { Shell("stty raw -echo < /dev/tty"); }
+U0 TermRawOff() { Shell("stty sane < /dev/tty"); }
+
+// [rows, cols] of the controlling terminal, with a 24x80 fallback.
+U0[] TermSize()
+{
+  U8 out = ShellStr("stty size < /dev/tty 2>/dev/null");
+  if (out == NULL) return [24, 80];
+  U0[] parts = StrSplit(StrTrim(out), " ");
+  if (Len(parts) < 2) return [24, 80];
+  I64 r = ToInt(parts[0]);
+  I64 c = ToInt(parts[1]);
+  if (r < 2 || c < 2) return [24, 80];
+  return [r, c];
+}
+
+// Map the bytes that follow an ESC to a key constant; bare ESC otherwise.
+I64 TermDecodeSeq(U8 s)
+{
+  if (s == "[A" || s == "OA") return K_UP;
+  if (s == "[B" || s == "OB") return K_DOWN;
+  if (s == "[C" || s == "OC") return K_RIGHT;
+  if (s == "[D" || s == "OD") return K_LEFT;
+  if (s == "[3~")             return K_DEL;
+  if (s == "[H" || s == "OH" || s == "[1~") return K_HOME;
+  if (s == "[F" || s == "OF" || s == "[4~") return K_END;
+  if (s == "[5~")             return K_PGUP;
+  if (s == "[6~")             return K_PGDN;
+  return 27;
+}
+
+// One decoded key press, or -1 when no byte could be read (no tty / EOF).
+I64 TermReadKey()
+{
+  U8 b = ShellStr("dd if=/dev/tty bs=1 count=1 2>/dev/null");
+  if (b == NULL || Len(b) == 0) return -1;
+  I64 c = CharAt(b, 0);
+  if (c != 27) return c;
+  // Bare ESC vs escape sequence: grab whatever follows within 0.1s,
+  // then restore blocking (min 1 time 0) reads.
+  U8 rest = ShellStr("stty min 0 time 1 < /dev/tty; dd if=/dev/tty bs=8 count=1 2>/dev/null; stty min 1 time 0 < /dev/tty");
+  if (rest == NULL || Len(rest) == 0) return 27;
+  return TermDecodeSeq(rest);
+}

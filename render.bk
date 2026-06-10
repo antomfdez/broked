@@ -1,0 +1,101 @@
+// render.bk - draw one frame: text rows with a line-number gutter,
+// an inverted status bar, and a message/command line.
+//
+// The whole frame is built as one string and printed once; the ShellStr
+// call that reads the next key flushes it to the terminal.
+
+#include "editor.bk"
+#include "term.bk"
+#include "hl.bk"
+
+// A line with tabs expanded to TABSTOP-column stops.
+U8 RenderExpand(U8 line)
+{
+  if (IndexOf(line, "\t") < 0) return line;
+  U8 out = "";
+  I64 rx = 0;
+  I64 i = 0;
+  for (i = 0; i < Len(line); ++i) {
+    I64 c = CharAt(line, i);
+    if (c == 9) {
+      I64 pad = TABSTOP - rx % TABSTOP;
+      out = out + StrRepeat(" ", pad);
+      rx = rx + pad;
+    } else {
+      out = out + Chr(c);
+      rx = rx + 1;
+    }
+  }
+  return out;
+}
+
+U8 RenderModeName(Ed e)
+{
+  if (e.mode == M_INSERT) return "INSERT";
+  if (e.mode == M_CMD) return "COMMAND";
+  return "NORMAL";
+}
+
+U8 RenderStatusBar(Ed e)
+{
+  U8 name = e.path;
+  if (name == "") name = "[No Name]";
+  U8 flag = "";
+  if (e.dirty) flag = " [+]";
+  U8 left = " " + RenderModeName(e) + "  " + name + flag;
+  U8 right = ToStr(e.cy + 1) + "," + ToStr(e.cx + 1)
+           + "  " + ToStr(Len(e.lines)) + "L ";
+  I64 pad = e.cols - Len(left) - Len(right);
+  if (pad < 1) {
+    left = Substr(left, 0, e.cols - Len(right) - 1);
+    pad = 1;
+  }
+  return TermCsi("7m") + left + StrRepeat(" ", pad) + right + TermCsi("m");
+}
+
+U8 RenderMessageLine(Ed e)
+{
+  U8 msg = e.status;
+  if (e.mode == M_CMD) msg = Chr(e.cmdkind) + e.cmd;
+  return Substr(msg, 0, e.cols - 1);
+}
+
+U0 EdDraw(Ed e)
+{
+  I64 gw = EdGutter(e);
+  I64 tw = e.cols - gw;
+  I64 tr = EdTextRows(e);
+  Bool hl = StrEndsWith(e.path, ".bk");
+  U8 f = TermCsi("?25l") + TermCsi("H");
+  I64 y = 0;
+  for (y = 0; y < tr; ++y) {
+    I64 fy = e.rowoff + y;
+    if (fy < Len(e.lines)) {
+      U8 num = StrPadLeft(ToStr(fy + 1), gw - 1, " ") + " ";
+      U8 text = RenderExpand(e.lines[fy]);
+      text = Substr(text, e.coloff, tw);
+      if (hl) text = HlLine(text);
+      f = f + TermCsi("90m") + num + TermCsi("39m") + text;
+    } else if (Len(e.lines) == 1 && e.lines[0] == "" && e.path == ""
+               && !e.dirty && y == tr / 3) {
+      U8 welcome = "broked - a vim-style editor written in brokm";
+      I64 wpad = (e.cols - Len(welcome)) / 2;
+      if (wpad < 0) wpad = 0;
+      f = f + "~" + StrRepeat(" ", wpad) + Substr(welcome, 0, e.cols - 1);
+    } else {
+      f = f + TermCsi("90m") + "~" + TermCsi("39m");
+    }
+    f = f + TermCsi("K") + "\r\n";
+  }
+  f = f + RenderStatusBar(e) + TermCsi("K") + "\r\n";
+  f = f + RenderMessageLine(e) + TermCsi("K");
+  // Park the cursor.
+  I64 crow = e.cy - e.rowoff + 1;
+  I64 ccol = EdRxOf(EdCurLine(e), e.cx) - e.coloff + 1 + gw;
+  if (e.mode == M_CMD) {
+    crow = e.rows;
+    ccol = Len(e.cmd) + 2;
+  }
+  f = f + TermCsi(ToStr(crow) + ";" + ToStr(ccol) + "H") + TermCsi("?25h");
+  Print("%s", f);
+}

@@ -1,0 +1,65 @@
+// insert.bk - INSERT mode: typing, Enter, Backspace, Delete, Tab.
+
+#include "editor.bk"
+
+// Backspace at column 0 joins onto the previous line.
+U0 EdInsBackspace(Ed e)
+{
+  if (e.cx > 0) {
+    e.lines[e.cy] = LineRemoveRange(EdCurLine(e), e.cx - 1, 1);
+    e.cx = e.cx - 1;
+    EdMarkDirty(e);
+    return;
+  }
+  if (e.cy == 0) return;
+  U8 prev = e.lines[e.cy - 1];
+  e.lines[e.cy - 1] = prev + EdCurLine(e);
+  e.lines = LinesRemoveAt(e.lines, e.cy, 1);
+  e.cy = e.cy - 1;
+  e.cx = Len(prev);
+  EdMarkDirty(e);
+}
+
+// Enter splits the line at the cursor.
+U0 EdInsEnter(Ed e)
+{
+  U8 line = EdCurLine(e);
+  U8 rest = Substr(line, e.cx, Len(line) - e.cx);
+  e.lines[e.cy] = Substr(line, 0, e.cx);
+  e.lines = LinesInsertAt(e.lines, e.cy + 1, rest);
+  e.cy = e.cy + 1;
+  e.cx = 0;
+  EdMarkDirty(e);
+}
+
+U0 EdInsertKey(Ed e, I64 k)
+{
+  if (k == 27 || k == 3) {                       // ESC / Ctrl-C
+    e.mode = M_NORMAL;
+    e.cx = e.cx - 1;
+    EdClampX(e);
+    e.wantx = e.cx;
+    return;
+  }
+  if (k == 13 || k == 10) { EdInsEnter(e); return; }
+  if (k == 127 || k == 8) { EdInsBackspace(e); return; }
+  if (k == K_DEL) {
+    if (e.cx < Len(EdCurLine(e))) {
+      e.lines[e.cy] = LineRemoveRange(EdCurLine(e), e.cx, 1);
+      EdMarkDirty(e);
+    }
+    return;
+  }
+  if (k == K_LEFT)  { EdMoveX(e, -1); return; }
+  if (k == K_RIGHT) { EdMoveX(e, 1); return; }
+  if (k == K_UP)    { EdMoveY(e, -1); return; }
+  if (k == K_DOWN)  { EdMoveY(e, 1); return; }
+  if (k == K_HOME)  { e.cx = 0; e.wantx = 0; return; }
+  if (k == K_END)   { e.cx = Len(EdCurLine(e)); e.wantx = e.cx; return; }
+  if (k == 9 || (k >= 32 && k <= 126)) {         // Tab or printable ASCII
+    e.lines[e.cy] = LineInsertStr(EdCurLine(e), e.cx, Chr(k));
+    e.cx = e.cx + 1;
+    e.wantx = e.cx;
+    EdMarkDirty(e);
+  }
+}
