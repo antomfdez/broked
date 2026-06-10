@@ -157,4 +157,4 @@ flushing.
 | one flat namespace | `Ed*`/`Term*`/`Buf*` prefixes, DAG includes |
 | methods can't span files | `Ed` is data-only; behavior is free functions |
 | no `\e` escape in strings | `Chr(27)` everywhere ANSI is built |
-| 256 constants per chunk | the *top-level* chunk holds one constant per declared function (plus global names and literals), so the whole program is capped at roughly 256 top-level declarations. broked sits near the ceiling: trivial single-caller helpers are inlined, and the test suite uses a few large functions instead of one per feature |
+| constant-pool limits | the *top-level* chunk holds one constant per declared function (plus global names and literals); broked once hit brokm's one-byte 256-constant ceiling, which is why trivial single-caller helpers are inlined and the test suite uses a few large functions instead of one per feature. brokm has since gained wide (16-bit) constant opcodes, so the real ceiling is now 65536 |
