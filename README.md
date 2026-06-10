@@ -1,9 +1,10 @@
 # broked
 
 **broked** — *broken editor* — is a terminal code editor with vim keybindings,
-written entirely in [brokm](https://github.com/antomfdez/brokm). Modal editing,
+written entirely in [brokm](https://github.com/antomfdez/brokm). Modal editing
+(normal, insert, visual, command), operator+motion combos (`dw`, `cw`, `d$`…),
 counts, registers, undo, search, an ex command line, line numbers, and syntax
-highlighting for `.bk` files — in ~1100 lines of brokm.
+highlighting for `.bk` files.
 
 ```sh
 brokm broked.bk file.bk            # run from source (needs BROKM_HOME)
@@ -34,8 +35,11 @@ Docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how it works inside ·
 | `Ctrl-D` / `Ctrl-U` | half page down / up (PgUp/PgDn too) |
 | `i I a A o O` | enter insert mode (at, bol, after, eol, below, above) |
 | `x` / `X` | delete char under / before cursor |
-| `dd` / `D` | delete line(s) / delete to end of line |
-| `yy` / `p` / `P` | yank line(s) / paste after / paste before |
+| `d` `c` `y` + motion | operate over `w b e $ 0 ^ h l` (e.g. `dw`, `cw`, `d$`, `2dw`) |
+| `dd` / `cc` / `yy` | delete / change / yank line(s) |
+| `D` / `C` | delete / change to end of line |
+| `v` / `V` | charwise / linewise visual mode (`d x y c`, `o` swaps ends) |
+| `p` / `P` | paste after / before |
 | `r<c>` | replace char |
 | `J` | join with next line |
 | `u` | undo |
@@ -58,7 +62,7 @@ Home/End. `ESC` (or `Ctrl-C`) returns to normal mode.
 A headless suite drives the key dispatcher with no terminal attached:
 
 ```sh
-BROKM_HOME=path/to/brokm brokm tests/test.bk    # 100 passed, 0 failed
+BROKM_HOME=path/to/brokm brokm tests/test.bk    # 159 passed, 0 failed
 ```
 
 ## How it works
@@ -88,7 +92,8 @@ from the scripting stdlib:
 | `term.bk` | raw mode, key decoding, ANSI helpers |
 | `buffer.bk` | line-array text buffer, load/save |
 | `editor.bk` | `Ed` state, clamping, scrolling, undo, motions, search |
-| `normal.bk` | NORMAL mode: operators, counts, registers |
+| `normal.bk` | NORMAL mode: operators (d/c/y + motion), counts, registers |
+| `visual.bk` | VISUAL mode: charwise/linewise selections |
 | `insert.bk` | INSERT mode |
 | `exline.bk` | `:` commands and `/` search prompt |
 | `render.bk` | frame drawing |
@@ -100,7 +105,9 @@ from the scripting stdlib:
 
 - One process spawn per keypress (the `dd` read) — fine interactively, but
   don't pipe a novel into it.
-- No visual mode, no redo, no `dw`/`cw` operator-motion combos (only `dd`).
+- No redo, no text objects (`diw`, `ci(`…), no marks, macros, or `.` repeat.
+  Charwise operators (`dw` etc.) stay on the current line; `dj`-style linewise
+  combos are not supported (use `2dd` or visual mode).
 - Highlighting is per-line and stateless: multi-line `/* */` comments are not
   colored, and a token clipped by horizontal scroll loses its color.
 - If brokm itself crashes mid-session the terminal stays raw — run `stty sane`.

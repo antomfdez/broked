@@ -1,0 +1,140 @@
+// visual.bk - VISUAL mode: charwise (v) and linewise (V) selections with
+// d/x (delete), y (yank), c/s (change), o (swap ends).
+
+#include "editor.bk"
+#include "normal.bk"   // EdDeleteLines / EdYankLines / EdChangeLines / EdDeleteChars
+
+// The selection as charwise fragments: first line from sx, whole middle
+// lines, last line through ex (inclusive). One element when sy == ey.
+U0[] EdSelFragments(Ed e, U0[] s)
+{
+  U8 first = e.lines[s[0]];
+  U8 last = e.lines[s[2]];
+  I64 hi = s[3] + 1;
+  if (hi > Len(last)) hi = Len(last);
+  if (s[0] == s[2]) {
+    I64 lo = s[1];
+    if (hi < lo) hi = lo;
+    return [Substr(first, lo, hi - lo)];
+  }
+  U0[] frags = [Substr(first, s[1], Len(first) - s[1])];
+  I64 y = 0;
+  for (y = s[0] + 1; y < s[2]; ++y) Append(frags, e.lines[y]);
+  Append(frags, Substr(last, 0, hi));
+  return frags;
+}
+
+// y - yank the selection; cursor moves to its start.
+U0 EdVisualYank(Ed e)
+{
+  U0[] s = EdSelRange(e);
+  if (e.vline) {
+    e.cy = s[0];
+    EdYankLines(e, s[2] - s[0] + 1);
+  } else {
+    e.yank = EdSelFragments(e, s);
+    e.yankline = FALSE;
+    e.cy = s[0];
+    e.cx = s[1];
+  }
+  e.mode = M_NORMAL;
+  EdClampX(e);
+  e.wantx = e.cx;
+}
+
+// d/x - delete the selection; with change, land in insert mode instead.
+U0 EdVisualDelete(Ed e, Bool change)
+{
+  U0[] s = EdSelRange(e);
+  if (e.vline) {
+    e.cy = s[0];
+    I64 n = s[2] - s[0] + 1;
+    if (change) { EdChangeLines(e, n); return; }
+    EdDeleteLines(e, n);
+    e.mode = M_NORMAL;
+    return;
+  }
+  // Charwise. Pick the target mode first so cursor clamping is right.
+  if (change) e.mode = M_INSERT;
+  else e.mode = M_NORMAL;
+  if (s[0] == s[2]) {
+    U8 line = e.lines[s[0]];
+    I64 hi = s[3] + 1;
+    if (hi > Len(line)) hi = Len(line);
+    e.cy = s[0];
+    if (hi > s[1]) {
+      EdDeleteChars(e, s[1], hi - s[1]);
+    } else {
+      e.cx = s[1];
+      if (change) EdPushUndo(e);
+    }
+    EdClampX(e);
+    e.wantx = e.cx;
+    return;
+  }
+  EdPushUndo(e);
+  e.yank = EdSelFragments(e, s);
+  e.yankline = FALSE;
+  U8 first = e.lines[s[0]];
+  U8 last = e.lines[s[2]];
+  I64 hi2 = s[3] + 1;
+  if (hi2 > Len(last)) hi2 = Len(last);
+  e.lines[s[0]] = Substr(first, 0, s[1]) + Substr(last, hi2, Len(last) - hi2);
+  e.lines = LinesRemoveAt(e.lines, s[0] + 1, s[2] - s[0]);
+  e.cy = s[0];
+  e.cx = s[1];
+  EdClampX(e);
+  e.wantx = e.cx;
+  e.dirty = TRUE;
+}
+
+U0 EdVisualKey(Ed e, I64 k)
+{
+  I64 rep = e.count;
+  if (rep < 1) rep = 1;
+
+  // gg is the only pending sequence inside visual mode.
+  if (e.pending == "g") {
+    e.pending = "";
+    if (k == 'g') {
+      e.cy = rep - 1;
+      if (e.count == 0) e.cy = 0;
+      if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+      e.cx = LineFirstNonBlank(EdCurLine(e));
+      e.wantx = e.cx;
+    }
+    e.count = 0;
+    return;
+  }
+
+  if ((k >= '1' && k <= '9') || (k == '0' && e.count > 0)) {
+    e.count = e.count * 10 + (k - '0');
+    return;
+  }
+
+  if (EdMotionKey(e, k, rep, e.count > 0)) { e.count = 0; return; }
+
+  if (k == 'g') { e.pending = "g"; return; }
+  else if (k == 27 || k == 3) { e.mode = M_NORMAL; }   // ESC / Ctrl-C
+  else if (k == 'v') {
+    if (e.vline) e.vline = FALSE;   // V -> v: switch to charwise
+    else e.mode = M_NORMAL;         // v again: leave visual mode
+  }
+  else if (k == 'V') {
+    if (e.vline) e.mode = M_NORMAL;
+    else e.vline = TRUE;
+  }
+  else if (k == 'o') {              // swap cursor and anchor
+    I64 tx = e.cx;
+    I64 ty = e.cy;
+    e.cx = e.vx;
+    e.cy = e.vy;
+    e.vx = tx;
+    e.vy = ty;
+    e.wantx = e.cx;
+  }
+  else if (k == 'd' || k == 'x') { EdVisualDelete(e, FALSE); }
+  else if (k == 'c' || k == 's') { EdVisualDelete(e, TRUE); }
+  else if (k == 'y') { EdVisualYank(e); }
+  e.count = 0;
+}

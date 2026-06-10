@@ -35,9 +35,17 @@ U0[] TermSize()
   return [r, c];
 }
 
-// Map the bytes that follow an ESC to a key constant; bare ESC otherwise.
-I64 TermDecodeSeq(U8 s)
+// One decoded key press, or -1 when no byte could be read (no tty / EOF).
+I64 TermReadKey()
 {
+  U8 b = ShellStr("dd if=/dev/tty bs=1 count=1 2>/dev/null");
+  if (b == NULL || Len(b) == 0) return -1;
+  I64 c = CharAt(b, 0);
+  if (c != 27) return c;
+  // Bare ESC vs escape sequence: grab whatever follows within 0.1s,
+  // then restore blocking (min 1 time 0) reads.
+  U8 s = ShellStr("stty min 0 time 1 < /dev/tty; dd if=/dev/tty bs=8 count=1 2>/dev/null; stty min 1 time 0 < /dev/tty");
+  if (s == NULL || Len(s) == 0) return 27;
   if (s == "[A" || s == "OA") return K_UP;
   if (s == "[B" || s == "OB") return K_DOWN;
   if (s == "[C" || s == "OC") return K_RIGHT;
@@ -48,18 +56,4 @@ I64 TermDecodeSeq(U8 s)
   if (s == "[5~")             return K_PGUP;
   if (s == "[6~")             return K_PGDN;
   return 27;
-}
-
-// One decoded key press, or -1 when no byte could be read (no tty / EOF).
-I64 TermReadKey()
-{
-  U8 b = ShellStr("dd if=/dev/tty bs=1 count=1 2>/dev/null");
-  if (b == NULL || Len(b) == 0) return -1;
-  I64 c = CharAt(b, 0);
-  if (c != 27) return c;
-  // Bare ESC vs escape sequence: grab whatever follows within 0.1s,
-  // then restore blocking (min 1 time 0) reads.
-  U8 rest = ShellStr("stty min 0 time 1 < /dev/tty; dd if=/dev/tty bs=8 count=1 2>/dev/null; stty min 1 time 0 < /dev/tty");
-  if (rest == NULL || Len(rest) == 0) return 27;
-  return TermDecodeSeq(rest);
 }

@@ -29,20 +29,51 @@ U8 RenderExpand(U8 line)
   return out;
 }
 
-U8 RenderModeName(Ed e)
+// The visible text of buffer line fy: expanded, clipped, and decorated —
+// the selection inverted in visual mode, else syntax colors for .bk files.
+U8 RenderRowText(Ed e, I64 fy)
 {
-  if (e.mode == M_INSERT) return "INSERT";
-  if (e.mode == M_CMD) return "COMMAND";
-  return "NORMAL";
+  I64 tw = e.cols - EdGutter(e);
+  U8 line = e.lines[fy];
+  U8 text = Substr(RenderExpand(line), e.coloff, tw);
+  if (e.mode == M_VISUAL) {
+    U0[] s = EdSelRange(e);
+    if (fy >= s[0] && fy <= s[2]) {
+      I64 a = 0;
+      I64 b = Len(line);
+      if (!e.vline) {
+        if (fy == s[0]) a = s[1];
+        if (fy == s[2]) b = s[3] + 1;
+      }
+      I64 ra = EdRxOf(line, a) - e.coloff;
+      I64 rb = EdRxOf(line, b) - e.coloff;
+      if (ra < 0) ra = 0;
+      if (ra > Len(text)) ra = Len(text);
+      if (rb < ra) rb = ra;
+      if (rb > Len(text)) rb = Len(text);
+      return Substr(text, 0, ra) + TermCsi("7m")
+           + Substr(text, ra, rb - ra) + TermCsi("27m")
+           + Substr(text, rb, Len(text) - rb);
+    }
+  }
+  if (StrEndsWith(e.path, ".bk")) return HlLine(text);
+  return text;
 }
 
 U8 RenderStatusBar(Ed e)
 {
+  U8 mode = "NORMAL";
+  if (e.mode == M_INSERT) mode = "INSERT";
+  if (e.mode == M_CMD) mode = "COMMAND";
+  if (e.mode == M_VISUAL) {
+    mode = "VISUAL";
+    if (e.vline) mode = "V-LINE";
+  }
   U8 name = e.path;
   if (name == "") name = "[No Name]";
   U8 flag = "";
   if (e.dirty) flag = " [+]";
-  U8 left = " " + RenderModeName(e) + "  " + name + flag;
+  U8 left = " " + mode + "  " + name + flag;
   U8 right = ToStr(e.cy + 1) + "," + ToStr(e.cx + 1)
            + "  " + ToStr(Len(e.lines)) + "L ";
   I64 pad = e.cols - Len(left) - Len(right);
@@ -63,19 +94,14 @@ U8 RenderMessageLine(Ed e)
 U0 EdDraw(Ed e)
 {
   I64 gw = EdGutter(e);
-  I64 tw = e.cols - gw;
   I64 tr = EdTextRows(e);
-  Bool hl = StrEndsWith(e.path, ".bk");
   U8 f = TermCsi("?25l") + TermCsi("H");
   I64 y = 0;
   for (y = 0; y < tr; ++y) {
     I64 fy = e.rowoff + y;
     if (fy < Len(e.lines)) {
       U8 num = StrPadLeft(ToStr(fy + 1), gw - 1, " ") + " ";
-      U8 text = RenderExpand(e.lines[fy]);
-      text = Substr(text, e.coloff, tw);
-      if (hl) text = HlLine(text);
-      f = f + TermCsi("90m") + num + TermCsi("39m") + text;
+      f = f + TermCsi("90m") + num + TermCsi("39m") + RenderRowText(e, fy);
     } else if (Len(e.lines) == 1 && e.lines[0] == "" && e.path == ""
                && !e.dirty && y == tr / 3) {
       U8 welcome = "broked - a vim-style editor written in brokm";

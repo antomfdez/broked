@@ -101,13 +101,9 @@ U0 TestMotion()
   Check(e.cy == 1 && e.cx == 2, "w wraps to next line nonblank");
   EdFeed(e, "b");
   Check(e.cy == 0 && e.cx == 6, "b wraps to previous line");
-}
 
-// --- insert mode --------------------------------------------------------
-
-U0 TestInsert()
-{
-  Ed e = T();
+  // --- insert mode ---
+  e = T();
   EdFeed(e, "iX");
   CheckEq(e.mode, M_INSERT, "i enters insert");
   CheckEq(e.lines[0], "Xhello world", "typed char inserted");
@@ -285,12 +281,190 @@ U0 TestRender()
   Check(StrContains(RenderStatusBar(e), "a.bk [+]"), "status bar dirty flag");
   EdFeed(e, ":wq");
   CheckEq(RenderMessageLine(e), ":wq", "message line echoes command");
+
+  e = T();
+  EdFeed(e, "vl");
+  Check(StrContains(RenderStatusBar(e), "VISUAL"), "status bar shows VISUAL");
+  Check(StrStartsWith(RenderRowText(e, 0),
+        TermCsi("7m") + "he" + TermCsi("27m")),
+        "selection rendered inverted");
+  CheckEq(RenderRowText(e, 1), "  second line", "unselected row stays plain");
+  EdKey(e, 27);
+  EdFeed(e, "V");
+  Check(StrContains(RenderStatusBar(e), "V-LINE"), "status bar shows V-LINE");
+  CheckEq(RenderRowText(e, 0),
+          TermCsi("7m") + "hello world" + TermCsi("27m"),
+          "V inverts the whole line");
+
+  // --- operator + motion (dw, cw, ...) ---
+  e = T();
+  EdFeed(e, "dw");
+  CheckEq(e.lines[0], "world", "dw deletes word and trailing space");
+  CheckEq(e.yank[0], "hello ", "dw yanks charwise");
+  Check(!e.yankline, "dw register is charwise");
+  EdFeed(e, "u");
+  CheckEq(e.lines[0], "hello world", "u undoes dw");
+
+  e = T();
+  EdFeed(e, "wdw");
+  CheckEq(e.lines[0], "hello ", "dw on last word stops at EOL");
+  Check(e.cy == 0 && Len(e.lines) == 3, "dw never crosses the line");
+
+  e = T();
+  EdFeed(e, "2dw");
+  CheckEq(e.lines[0], "", "2dw eats both words");
+
+  e = T();
+  EdFeed(e, "cw");
+  CheckEq(e.mode, M_INSERT, "cw enters insert");
+  CheckEq(e.lines[0], " world", "cw acts like ce (keeps the space)");
+  CheckEq(e.cx, 0, "cw cursor at change start");
+  EdKey(e, 27);
+  EdFeed(e, "u");
+  CheckEq(e.lines[0], "hello world", "u undoes cw as one change");
+
+  e = T();
+  EdFeed(e, "5lcw");
+  CheckEq(e.lines[0], "helloworld", "cw on whitespace deletes it like dw");
+  CheckEq(e.mode, M_INSERT, "cw on whitespace still inserts");
+  EdKey(e, 27);
+
+  e = T();
+  EdFeed(e, "wcw");
+  CheckEq(e.lines[0], "hello ", "cw on last word changes to EOL");
+  CheckEq(e.cx, 6, "cw at EOL leaves cursor past last char");
+  EdKey(e, 27);
+
+  e = T();
+  EdFeed(e, "de");
+  CheckEq(e.lines[0], " world", "de deletes to word end");
+  e = T();
+  EdFeed(e, "wdb");
+  CheckEq(e.lines[0], "world", "db deletes back to word start");
+  e = T();
+  EdFeed(e, "lld$");
+  CheckEq(e.lines[0], "he", "d$ deletes to EOL");
+  e = T();
+  EdFeed(e, "lld0");
+  Check(e.lines[0] == "llo world" && e.cx == 0, "d0 deletes to line start");
+  e = T();
+  EdFeed(e, "dl");
+  CheckEq(e.lines[0], "ello world", "dl deletes one char like x");
+
+  e = T();
+  EdFeed(e, "yw");
+  Check(e.yank[0] == "hello " && e.lines[0] == "hello world", "yw yanks only");
+  EdFeed(e, "P");
+  CheckEq(e.lines[0], "hello hello world", "P pastes yw text");
+
+  e = T();
+  EdFeed(e, "cc");
+  Check(e.mode == M_INSERT && e.lines[0] == "" && Len(e.lines) == 3,
+        "cc clears the line into insert");
+  EdKey(e, 27);
+  EdFeed(e, "u");
+  CheckEq(e.lines[0], "hello world", "u undoes cc");
+
+  Ed e2 = EdNew(24, 80);
+  e2.lines = ["only"];
+  EdFeed(e2, "cc");
+  Check(Len(e2.lines) == 1 && e2.lines[0] == "", "cc on sole line");
+  EdKey(e2, 27);
+
+  e = T();
+  EdFeed(e, "llC");
+  Check(e.lines[0] == "he" && e.mode == M_INSERT && e.cx == 2,
+        "C changes to EOL");
+  EdKey(e, 27);
 }
 
-// --- syntax highlighting -----------------------------------------------
+// --- visual mode ----------------------------------------------------------
 
-U0 TestHighlight()
+U0 TestVisual()
 {
+  Ed e = T();
+  EdFeed(e, "v");
+  CheckEq(e.mode, M_VISUAL, "v enters visual");
+  Check(!e.vline, "v is charwise");
+  EdFeed(e, "ll");
+  EdKey(e, 27);
+  Check(e.mode == M_NORMAL && e.lines[0] == "hello world", "ESC cancels visual");
+
+  e = T();
+  EdFeed(e, "vlld");
+  CheckEq(e.lines[0], "lo world", "v..d deletes inclusive selection");
+  CheckEq(e.yank[0], "hel", "visual delete yanks");
+  Check(e.mode == M_NORMAL && e.cx == 0, "visual delete back to normal");
+  EdFeed(e, "P");
+  CheckEq(e.lines[0], "hello world", "P restores visual delete");
+
+  e = T();
+  EdFeed(e, "v2ld");
+  CheckEq(e.lines[0], "lo world", "counts work in visual");
+
+  e = T();
+  EdFeed(e, "wvjd");
+  Check(Len(e.lines) == 2 && e.lines[0] == "hello d line",
+        "cross-line charwise delete splices");
+  Check(e.cy == 0 && e.cx == 6, "cursor at selection start");
+  CheckEq(Len(e.yank), 2, "cross-line yank keeps fragments");
+  EdFeed(e, "P");
+  Check(Len(e.lines) == 3 && e.lines[0] == "hello world"
+        && e.lines[1] == "  second line", "multi-line charwise paste restores");
+  EdFeed(e, "u");
+  EdFeed(e, "u");
+  CheckEq(Len(e.lines), 3, "undo through visual ops");
+
+  e = T();
+  EdFeed(e, "Vjd");
+  Check(Len(e.lines) == 1 && e.lines[0] == "third", "Vj d deletes two lines");
+  Check(e.yankline, "V delete is linewise");
+  EdFeed(e, "P");
+  Check(Len(e.lines) == 3 && e.lines[0] == "hello world", "P restores V delete");
+
+  e = T();
+  EdFeed(e, "vllo");
+  CheckEq(e.cx, 0, "o swaps to anchor");
+  EdFeed(e, "d");
+  CheckEq(e.lines[0], "lo world", "swapped selection deletes the same");
+
+  e = T();
+  EdFeed(e, "vlc");
+  Check(e.mode == M_INSERT && e.lines[0] == "llo world", "v..c changes");
+
+  e = T();
+  EdFeed(e, "Vc");
+  Check(e.mode == M_INSERT && e.lines[0] == "" && Len(e.lines) == 3,
+        "V c changes whole line");
+  EdKey(e, 27);
+
+  e = T();
+  EdFeed(e, "vjy");
+  Check(Len(e.yank) == 2 && !e.yankline, "charwise multi-line yank");
+  Check(e.cy == 0 && e.cx == 0 && e.mode == M_NORMAL, "y returns to start");
+  CheckEq(e.lines[0], "hello world", "y leaves buffer intact");
+
+  e = T();
+  EdFeed(e, "vGy");
+  CheckEq(Len(e.yank), 3, "vG spans the buffer");
+
+  e = T();
+  EdFeed(e, "Gvggd");
+  Check(Len(e.lines) == 1 && e.lines[0] == "hird", "gg works inside visual");
+
+  e = T();
+  EdFeed(e, "wv0");
+  U0[] s = EdSelRange(e);
+  Check(s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 6,
+        "EdSelRange normalizes backwards selection");
+
+  e = T();
+  EdFeed(e, "Vv");
+  Check(e.mode == M_VISUAL && !e.vline, "v switches V to charwise");
+  EdFeed(e, "v");
+  CheckEq(e.mode, M_NORMAL, "v again exits");
+
+  // --- syntax highlighting ---
   CheckEq(HlLine("hello"), "hello", "plain text passes through");
   U8 got = HlLine("I64 x = 42; // c");
   Check(StrContains(got, HL_TYPE + "I64" + HL_RESET), "type colored");
@@ -310,11 +484,10 @@ U0 TestHighlight()
 
 TestBuffer();
 TestMotion();
-TestInsert();
 TestEdits();
+TestVisual();
 TestExline();
 TestRender();
-TestHighlight();
 
 "%d passed, %d failed\n", passed, failed;
 if (failed > 0) Exit(1);

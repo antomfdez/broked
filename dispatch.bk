@@ -5,11 +5,13 @@
 #include "normal.bk"
 #include "insert.bk"
 #include "exline.bk"
+#include "visual.bk"
 
 U0 EdKey(Ed e, I64 k)
 {
   if (e.mode == M_INSERT) EdInsertKey(e, k);
   else if (e.mode == M_CMD) EdCmdKey(e, k);
+  else if (e.mode == M_VISUAL) EdVisualKey(e, k);
   else EdNormalKey(e, k);
 }
 

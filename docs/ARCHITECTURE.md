@@ -9,7 +9,8 @@ raw-terminal API, no first-class functions, and arrays that never shrink.
 broked.bk            entry point: load file, raw mode, main loop
   ├── dispatch.bk    mode -> handler routing (shared with the tests)
   │     ├── editor.bk   Ed state class + shared helpers (motions, undo, search)
-  │     ├── normal.bk   NORMAL mode: operators, counts, registers
+  │     ├── normal.bk   NORMAL mode: operators (d/c/y + motion), counts, registers
+  │     ├── visual.bk   VISUAL mode: charwise/linewise selections
   │     ├── insert.bk   INSERT mode
   │     └── exline.bk   ":" ex commands and "/" search prompt
   └── render.bk      frame drawing
@@ -84,8 +85,18 @@ State machines instead of callbacks (brokm has no first-class functions):
 
 - **Counts**: digits accumulate in `e.count`; every handler reads
   `rep = max(1, count)` and clears it.
-- **Two-key commands** (`dd`, `yy`, `gg`, `r<c>`, `ZZ`): the first key sets
-  `e.pending`; `EdPendingKey` consumes the second.
+- **Operators** (`d`/`c`/`y`): the first key sets `e.pending`; the second is
+  either the doubled form (`dd`/`cc`/`yy`, linewise) or a charwise motion
+  resolved by `EdOpMotion` — it runs the real motion code against the live
+  cursor, captures the endpoint, restores the cursor, and applies the
+  operator to the resulting range. Motions briefly run with insert-mode
+  clamping so a range can reach one past EOL (`dw` on the last word). The
+  same pending machinery handles `gg`, `r<c>`, and `ZZ`.
+- **Visual mode** keeps an anchor (`vx`/`vy`, plus a linewise flag); the
+  cursor moves with the shared `EdMotionKey` (also used by NORMAL mode), and
+  operators act on the normalized anchor..cursor range. A cross-line
+  charwise selection yanks *fragments* — first-line tail, whole middle
+  lines, last-line head — which paste splices back around the cursor.
 - **The command line** is just a mode: `:`/`/` switch to `M_CMD`, printable
   keys append to `e.cmd`, Enter executes, ESC cancels. The renderer shows
   `e.cmd` in the message line and parks the cursor there.
@@ -112,6 +123,9 @@ Full redraw per keypress, kilo-style, flicker-free without clearing:
 The cursor column uses a cx→rx map (`EdRxOf`) so tabs render correctly.
 Highlight escapes are zero-width and injected *after* horizontal clipping,
 so they never disturb geometry. The frame is one string, printed once.
+In visual mode, rows intersecting the selection get inverse video over the
+selected rx range instead of syntax colors (mixing both would shift the
+byte offsets the selection math relies on).
 
 `hl.bk` is a stateless per-line scanner: `//` comments, string/char literals
 (escape-aware), numbers, keyword/type lookup via brokm maps. Stateless means
@@ -123,7 +137,9 @@ multi-line `/* */` isn't colored — a deliberate trade for simplicity.
 `TermReadKey`/`EdDraw`, so it runs with no terminal at a fixed 24×80. Tests
 feed key strings through `EdFeed` and assert buffer/cursor/mode/register
 state, plus pure-function checks for buffer primitives, rx mapping, status
-bar, and highlighting. 100 assertions; non-zero exit on failure.
+bar, selection rendering, and highlighting. 159 assertions; non-zero exit on
+failure. The suite is grouped into a handful of large test functions rather
+than one per feature — see the constant-pool constraint below.
 
 Two things are only verifiable live and are smoke-tested through a pty
 (`script(1)` + delayed keystrokes): the stty/dd input path and frame
@@ -141,3 +157,4 @@ flushing.
 | one flat namespace | `Ed*`/`Term*`/`Buf*` prefixes, DAG includes |
 | methods can't span files | `Ed` is data-only; behavior is free functions |
 | no `\e` escape in strings | `Chr(27)` everywhere ANSI is built |
+| 256 constants per chunk | the *top-level* chunk holds one constant per declared function (plus global names and literals), so the whole program is capped at roughly 256 top-level declarations. broked sits near the ceiling: trivial single-caller helpers are inlined, and the test suite uses a few large functions instead of one per feature |

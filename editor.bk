@@ -7,6 +7,7 @@
 I64 M_NORMAL = 0;
 I64 M_INSERT = 1;
 I64 M_CMD    = 2;
+I64 M_VISUAL = 3;
 
 I64 TABSTOP = 8;
 
@@ -33,6 +34,9 @@ class Ed {
   I64  undolen;    // live entries (the array itself never shrinks)
   U8   search;     // last / pattern
   Bool quit;       // main loop exit flag
+  I64  vx;         // visual mode: anchor column
+  I64  vy;         // visual mode: anchor line
+  Bool vline;      // visual mode: linewise (V)?
 }
 
 Ed EdNew(I64 rows, I64 cols)
@@ -60,6 +64,9 @@ Ed EdNew(I64 rows, I64 cols)
   e.undolen = 0;
   e.search = "";
   e.quit = FALSE;
+  e.vx = 0;
+  e.vy = 0;
+  e.vline = FALSE;
   return e;
 }
 
@@ -111,8 +118,6 @@ U0 EdUndo(Ed e)
 }
 
 // --- mutation primitives shared by modes ------------------------------------
-
-U0 EdMarkDirty(Ed e) { e.dirty = TRUE; }
 
 Bool EdSave(Ed e)
 {
@@ -287,6 +292,46 @@ U0 EdMoveX(Ed e, I64 dx)
   e.cx = e.cx + dx;
   EdClampX(e);
   e.wantx = e.cx;
+}
+
+// One cursor motion, shared by NORMAL and VISUAL mode. hasCount tells G
+// apart from 5G. Returns TRUE when the key was a motion.
+Bool EdMotionKey(Ed e, I64 k, I64 rep, Bool hasCount)
+{
+  I64 i = 0;
+  if (k == 'h' || k == K_LEFT)       { EdMoveX(e, 0 - rep); }
+  else if (k == 'l' || k == K_RIGHT) { EdMoveX(e, rep); }
+  else if (k == 'j' || k == K_DOWN)  { EdMoveY(e, rep); }
+  else if (k == 'k' || k == K_UP)    { EdMoveY(e, 0 - rep); }
+  else if (k == '0' || k == K_HOME)  { e.cx = 0; e.wantx = 0; }
+  else if (k == '$' || k == K_END)   { e.cx = EdMaxX(e); e.wantx = 999999; }
+  else if (k == '^') { e.cx = LineFirstNonBlank(EdCurLine(e)); e.wantx = e.cx; }
+  else if (k == 'w') { for (i = 0; i < rep; ++i) EdWordFwd(e); e.wantx = e.cx; }
+  else if (k == 'b') { for (i = 0; i < rep; ++i) EdWordBack(e); e.wantx = e.cx; }
+  else if (k == 'e') { for (i = 0; i < rep; ++i) EdWordEnd(e); e.wantx = e.cx; }
+  else if (k == 'G') {
+    e.cy = Len(e.lines) - 1;
+    if (hasCount) e.cy = rep - 1;
+    if (e.cy > Len(e.lines) - 1) e.cy = Len(e.lines) - 1;
+    if (e.cy < 0) e.cy = 0;
+    e.cx = LineFirstNonBlank(EdCurLine(e));
+    e.wantx = e.cx;
+  }
+  else if (k == 4)  { EdMoveY(e, EdTextRows(e) / 2); }        // Ctrl-D
+  else if (k == 21) { EdMoveY(e, 0 - EdTextRows(e) / 2); }    // Ctrl-U
+  else if (k == K_PGDN) { EdMoveY(e, EdTextRows(e)); }
+  else if (k == K_PGUP) { EdMoveY(e, 0 - EdTextRows(e)); }
+  else return FALSE;
+  return TRUE;
+}
+
+// Visual selection normalized to buffer order: [sy, sx, ey, ex], where
+// (sy,sx) is the earlier endpoint. Charwise selections include (ey,ex).
+U0[] EdSelRange(Ed e)
+{
+  if (e.vy < e.cy || (e.vy == e.cy && e.vx <= e.cx))
+    return [e.vy, e.vx, e.cy, e.cx];
+  return [e.cy, e.cx, e.vy, e.vx];
 }
 
 // --- search -----------------------------------------------------------------

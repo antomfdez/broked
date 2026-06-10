@@ -8,7 +8,7 @@ U0 EdInsBackspace(Ed e)
   if (e.cx > 0) {
     e.lines[e.cy] = LineRemoveRange(EdCurLine(e), e.cx - 1, 1);
     e.cx = e.cx - 1;
-    EdMarkDirty(e);
+    e.dirty = TRUE;
     return;
   }
   if (e.cy == 0) return;
@@ -17,7 +17,7 @@ U0 EdInsBackspace(Ed e)
   e.lines = LinesRemoveAt(e.lines, e.cy, 1);
   e.cy = e.cy - 1;
   e.cx = Len(prev);
-  EdMarkDirty(e);
+  e.dirty = TRUE;
 }
 
 // Enter splits the line at the cursor.
@@ -29,7 +29,7 @@ U0 EdInsEnter(Ed e)
   e.lines = LinesInsertAt(e.lines, e.cy + 1, rest);
   e.cy = e.cy + 1;
   e.cx = 0;
-  EdMarkDirty(e);
+  e.dirty = TRUE;
 }
 
 U0 EdInsertKey(Ed e, I64 k)
@@ -46,7 +46,7 @@ U0 EdInsertKey(Ed e, I64 k)
   if (k == K_DEL) {
     if (e.cx < Len(EdCurLine(e))) {
       e.lines[e.cy] = LineRemoveRange(EdCurLine(e), e.cx, 1);
-      EdMarkDirty(e);
+      e.dirty = TRUE;
     }
     return;
   }
@@ -60,6 +60,6 @@ U0 EdInsertKey(Ed e, I64 k)
     e.lines[e.cy] = LineInsertStr(EdCurLine(e), e.cx, Chr(k));
     e.cx = e.cx + 1;
     e.wantx = e.cx;
-    EdMarkDirty(e);
+    e.dirty = TRUE;
   }
 }
