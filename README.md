@@ -7,15 +7,36 @@ counts, registers, undo, search, an ex command line, line numbers, and syntax
 highlighting for `.bk` files.
 
 ```sh
-brokm broked.bk file.bk            # run from source (needs BROKM_HOME)
+brokm broked.bk file.bk            # run from source
 brokm build broked.bk -o broked    # AOT-compile to a standalone binary
 ./broked file.bk
 ```
 
+## Install & update
+
+Everything lives in one place — `~/.broked` is a clone of this repository
+holding the binary and the sources it is built from. One script installs
+*and* updates:
+
+```sh
+sh install.sh     # clone (or pull) ~/.broked and build; re-run any time to update
+```
+
+Then add to your shell profile (the script prints this):
+
+```sh
+export PATH="$HOME/.broked:$PATH"
+```
+
+Uninstall with `rm -rf ~/.broked`. Set `BROKED_HOME` before running the
+script to install somewhere else.
+
 ## Requirements
 
-- [brokm](https://github.com/antomfdez/brokm) installed (`sh install.sh`), with
-  `BROKM_HOME` set so the `std/*.bk` includes resolve.
+- [brokm](https://github.com/antomfdez/brokm) installed (`sh install.sh`) and
+  on `PATH`. The `std/*.bk` includes resolve via `$BROKM_HOME/lib`, falling
+  back to `~/.brokm/lib`, so `BROKM_HOME` is only needed for non-default
+  brokm installs.
 - A POSIX terminal with `stty` and `dd` (macOS / Linux). brokm has no native
   raw-tty API, so broked drives the terminal through them (see *How it works*).
 
@@ -62,7 +83,7 @@ Home/End. `ESC` (or `Ctrl-C`) returns to normal mode.
 A headless suite drives the key dispatcher with no terminal attached:
 
 ```sh
-BROKM_HOME=path/to/brokm brokm tests/test.bk    # 159 passed, 0 failed
+brokm tests/test.bk    # 159 passed, 0 failed
 ```
 
 ## How it works
