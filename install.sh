@@ -5,15 +5,21 @@
 #   sh install.sh             install (or update) into ~/.broked
 #   BROKED_HOME=/opt/broked sh install.sh    ...or anywhere else
 #
-# The install directory IS a git clone of the repository
-# all live in the one place. Updating is the same command: the script pulls
-# and rebuilds. Uninstalling is `rm -rf ~/.broked`.
+# The install directory IS a git clone of the repository - binary, sources,
+# and docs all live in the one place. Updating is the same command: the
+# script pulls and rebuilds. Uninstalling is `rm -rf ~/.broked`.
 set -e
 
 REPO_URL="${BROKED_REPO:-https://github.com/antomfdez/broked.git}"
 HOME_DIR="${BROKED_HOME:-$HOME/.broked}"
 SRC_FILE="$HOME_DIR/broked.bk"
 OUT_FILE="$HOME_DIR/broked"
+
+if ! command -v brokm >/dev/null 2>&1; then
+  echo "broked: brokm not found on PATH - install it first:" >&2
+  echo "       https://github.com/antomfdez/brokm  (sh install.sh)" >&2
+  exit 1
+fi
 
 if [ -d "$HOME_DIR/.git" ]; then
   echo "broked: updating $HOME_DIR"
@@ -37,7 +43,7 @@ case ":$PATH:" in
     echo "Add broked to your shell profile:"
     echo ""
     echo "  # bash/zsh (~/.bashrc, ~/.zshrc)"
-    echo "  export PATH=\"\$BROKED_HOME:\$PATH\""
+    echo "  export PATH=\"$HOME_DIR:\$PATH\""
     echo ""
     echo "  # fish (~/.config/fish/config.fish)"
     echo "  fish_add_path $HOME_DIR"
